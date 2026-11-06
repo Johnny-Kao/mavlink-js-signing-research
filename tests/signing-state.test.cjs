@@ -73,3 +73,20 @@ test('invalid signature on existing stream preserves state', () => {
     assert.equal(verify(rx, FIRST + 2), true);
     assert.equal(rx.signing.stream_timestamps[STREAM], FIRST + 2);
 });
+
+test('real decoder rejects a forged signature without poisoning a new stream', () => {
+    const rx = receiver();
+    assert.throws(() => rx.decode(signedHeartbeat(FIRST + 100, true)), /Invalid signature/);
+    assert.equal(Object.hasOwn(rx.signing.stream_timestamps, STREAM), false);
+    assert.doesNotThrow(() => rx.decode(signedHeartbeat(FIRST + 1)));
+    assert.equal(rx.signing.stream_timestamps[STREAM], FIRST + 1);
+});
+
+test('permissive callback does not promote an invalid signature into trusted state', () => {
+    const rx = receiver();
+    rx.signing.allow_unsigned_callback = () => true;
+    assert.doesNotThrow(() => rx.decode(signedHeartbeat(FIRST + 100, true)));
+    assert.equal(Object.hasOwn(rx.signing.stream_timestamps, STREAM), false);
+    assert.doesNotThrow(() => rx.decode(signedHeartbeat(FIRST + 1)));
+    assert.equal(rx.signing.stream_timestamps[STREAM], FIRST + 1);
+});
