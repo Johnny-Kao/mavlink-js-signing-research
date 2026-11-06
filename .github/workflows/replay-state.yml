@@ -1,4 +1,4 @@
-name: JavaScript signing replay regression
+name: JavaScript signing staging validation
 
 on:
   push:
@@ -30,43 +30,51 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
-      - name: Install upstream build and test dependencies
+      - name: Install upstream dependencies with upstream no-generation option
         run: |
           NOGEN=1 python -m pip install -e ./upstream
-          python -m pip install pytest lxml
+          python -m pip install pytest lxml flake8
           cd upstream/generator/javascript
           npm install --ignore-scripts --no-audit --no-fund
-      - name: Apply research fix in candidate
+      - name: Apply minimal generator change for candidate
         if: matrix.variant == 'candidate'
         run: python scripts/apply_fix.py upstream
-      - name: Generate official JavaScript_NextGen bindings
+      - name: Install tests in pymavlink's existing test layout
+        run: |
+          cp staging/tests/test_javascript_signing_state.py upstream/tests/
+          cp tests/signing-state.test.cjs upstream/tests/sysid32/
+      - name: Lint Python generator and new pytest file
         run: |
           cd upstream
-          python tools/mavgen.py --lang=JavaScript_NextGen --wire-protocol=2.0 --output="$GITHUB_WORKSPACE/minimal.js" tests/snapshottests/resources/minimal.xml
-      - name: Run signing regressions and assert baseline fails
-        env:
-          GENERATED_JS: ${{ github.workspace }}/minimal.js
-          NODE_PATH: ${{ github.workspace }}/upstream/generator/javascript/node_modules
-          VARIANT: ${{ matrix.variant }}
+          python -m flake8 generator/mavgen_javascript.py tests/test_javascript_signing_state.py --count --select=E9,F63,F7,F82 --show-source --statistics
+          python -m compileall -q generator/mavgen_javascript.py tests/test_javascript_signing_state.py
+      - name: Check new tests fail specifically on original generator
+        if: matrix.variant == 'baseline'
+        working-directory: upstream
         run: |
           set +e
-          node --test tests/signing-state.test.cjs
+          python -m pytest -q tests/test_javascript_signing_state.py > baseline.log 2>&1
           status=$?
           set -e
-          if [ "$VARIANT" = baseline ]; then
-            if [ "$status" -eq 0 ]; then
-              echo "UNEXPECTED: original generator passed all regression tests"
-              exit 1
-            fi
-            echo "Expected original-generator failures confirmed"
-          else
-            exit "$status"
+          cat baseline.log
+          if [ "$status" -eq 0 ]; then
+            echo "Unexpected: unmodified generator passes signing regression"
+            exit 1
           fi
-      - name: Run upstream signing and JavaScript parser tests
+          if ! grep -q '# fail 6' baseline.log; then
+            echo "Expected six Node assertion failures, not an environment or import failure"
+            exit 1
+          fi
+          echo "Verified expected six regression failures on unmodified generator"
+      - name: Run new regression through native pytest runner
         if: matrix.variant == 'candidate'
         working-directory: upstream
-        env:
-          NODE_PATH: ${{ github.workspace }}/upstream/generator/javascript/node_modules
-        run: |
-          python -m pytest -q tests/test_signing_state.py
-          python -m pytest -q tests/test_sysid32_generators.py -k 'nextgen_rejects_unknown_incompat_flags or stable_javascript_rejects_unknown_flags_and_unverified_signatures'
+        run: python -m pytest -q tests/test_javascript_signing_state.py
+      - name: Run upstream's existing signing tests
+        if: matrix.variant == 'candidate'
+        working-directory: upstream
+        run: python -m pytest -q tests/test_signing_state.py
+      - name: Run upstream's existing JavaScript generator tests
+        if: matrix.variant == 'candidate'
+        working-directory: upstream
+        run: python -m pytest -q tests/test_sysid32_generators.py -k 'nextgen or javascript'
