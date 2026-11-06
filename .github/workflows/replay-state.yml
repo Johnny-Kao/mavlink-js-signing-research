@@ -1,0 +1,72 @@
+name: JavaScript signing replay regression
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  replay:
+    name: ${{ matrix.variant }} / Node ${{ matrix.node }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [baseline, candidate]
+        node: [20, 22]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: ArduPilot/pymavlink
+          ref: 544d9016f6e19fed105b28fb41e9ade19c45d8c2
+          path: upstream
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Install upstream build and test dependencies
+        run: |
+          python -m pip install -e ./upstream
+          python -m pip install pytest lxml
+          cd upstream/generator/javascript
+          npm install --ignore-scripts --no-audit --no-fund
+      - name: Apply research fix in candidate
+        if: matrix.variant == 'candidate'
+        run: python scripts/apply_fix.py upstream
+      - name: Generate official JavaScript_NextGen bindings
+        run: |
+          cd upstream
+          python tools/mavgen.py --lang=JavaScript_NextGen --wire-protocol=2.0 --output="$GITHUB_WORKSPACE/minimal.js" tests/snapshottests/resources/minimal.xml
+      - name: Run signing regressions and assert baseline fails
+        env:
+          GENERATED_JS: ${{ github.workspace }}/minimal.js
+          NODE_PATH: ${{ github.workspace }}/upstream/generator/javascript/node_modules
+          VARIANT: ${{ matrix.variant }}
+        run: |
+          set +e
+          node --test tests/signing-state.test.cjs
+          status=$?
+          set -e
+          if [ "$VARIANT" = baseline ]; then
+            if [ "$status" -eq 0 ]; then
+              echo "UNEXPECTED: original generator passed all regression tests"
+              exit 1
+            fi
+            echo "Expected original-generator failures confirmed"
+          else
+            exit "$status"
+          fi
+      - name: Run upstream signing and JavaScript parser tests
+        if: matrix.variant == 'candidate'
+        working-directory: upstream
+        env:
+          NODE_PATH: ${{ github.workspace }}/upstream/generator/javascript/node_modules
+        run: |
+          python -m pytest -q tests/test_signing_state.py
+          python -m pytest -q tests/test_sysid32_generators.py -k 'nextgen_rejects_unknown_incompat_flags or stable_javascript_rejects_unknown_flags_and_unverified_signatures'
