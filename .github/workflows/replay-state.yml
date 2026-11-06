@@ -32,7 +32,7 @@ jobs:
           node-version: ${{ matrix.node }}
       - name: Install upstream build and test dependencies
         run: |
-          python -m pip install -e ./upstream
+          NOGEN=1 python -m pip install -e ./upstream
           python -m pip install pytest lxml
           cd upstream/generator/javascript
           npm install --ignore-scripts --no-audit --no-fund
